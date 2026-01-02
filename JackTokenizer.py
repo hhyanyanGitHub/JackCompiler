@@ -2,27 +2,71 @@ import re
 
 class JackTokenizer:
     def __init__(self, input_file):
-        """´ò¿ªÎÄ¼ş²¢½øĞĞÔ¤´¦Àí£¨È¥³ı×¢ÊÍºÍ¿ÕĞĞ£©"""
-        with open(input_file, 'r') as f:
-            self.content = f.read()
-        # TODO: ±àĞ´ÕıÔò»òÂß¼­È¥³ı // ºÍ /* */ ×¢ÊÍ
-        self.tokens = self._tokenize(self.content)
+        """åˆå§‹åŒ–ï¼šè¯»å–å¹¶æ¸…æ´—æ•°æ®"""
+        with open(input_file, 'r',encoding='utf-8') as f:
+            self.source = f.read()
+        
+        # 1. é¢„å¤„ç†ï¼šå»é™¤æ³¨é‡Šå’Œå¤šä½™ç©ºç™½
+        self._clean_source()
+        # 2. è¯æ³•åˆ†æï¼šåˆ‡åˆ†æˆ tokens
+        self._tokenize()
+        
+        self.current_index = -1
         self.current_token = None
-        self.index = -1
 
-    def _tokenize(self, source):
-        """ÕâÊÇºËĞÄÂß¼­£ºÀûÓÃÕıÔò±í´ïÊ½½«×Ö·û´®ÇĞ·Ö³É token ÁĞ±í"""
-        # ÌáÊ¾£º¿ÉÒÔÊ¹ÓÃ re.findall
+    def _clean_source(self):
+        """åˆ©ç”¨æ­£åˆ™ç§»é™¤æ‰€æœ‰æ³¨é‡Š"""
+        # ç§»é™¤å¤šè¡Œæ³¨é‡Š /* ... */
+        self.source = re.sub(r'/\*.*?\*/', '', self.source, flags=re.DOTALL)
+        # ç§»é™¤å•è¡Œæ³¨é‡Š // ...
+        self.source = re.sub(r'//.*', '', self.source)
 
-        pass
+    def _tokenize(self):
+        """å°†æ¸…æ´—åçš„æºç åˆ‡åˆ†ä¸º Token åˆ—è¡¨"""
+        # å®šä¹‰å„ç±» Token çš„ç»„åˆæ­£åˆ™
+        keywords = r'(class|constructor|function|method|field|static|var|int|char|boolean|void|true|false|null|this|let|do|if|else|while|return)'
+        symbols = r'([\{\}\(\)\[\]\.,;+\-*/&|<>=~])'
+        integer = r'(\d+)'
+        string = r'"([^"\n]*)"'
+        identifier = r'([A-Za-z_][\w]*)'
+
+        # åˆå¹¶æ‰€æœ‰æ­£åˆ™
+        pattern = f'{keywords}|{symbols}|{integer}|{string}|{identifier}'
+        
+        self.tokens = []
+        for match in re.finditer(pattern, self.source):
+            # è¿‡æ»¤æ‰æ­£åˆ™åŒ¹é…ä¸­çš„ç©ºå€¼
+            token = match.group(0)
+            if token:
+                # å¦‚æœæ˜¯å­—ç¬¦ä¸²ï¼Œå»æ‰å¼•å·å­˜å…¥åˆ—è¡¨ï¼ˆJackè§„èŒƒè¦æ±‚ï¼‰
+                if token.startswith('"'):
+                    self.tokens.append(token) 
+                else:
+                    self.tokens.append(token)
 
     def has_more_tokens(self):
-        return self.index + 1 < len(self.tokens)
+        return self.current_index + 1 < len(self.tokens)
 
     def advance(self):
-        self.index += 1
-        self.current_token = self.tokens[self.index]
+        if self.has_more_tokens():
+            self.current_index += 1
+            self.current_token = self.tokens[self.current_index]
 
     def token_type(self):
-        """·µ»Øµ±Ç° token µÄÀàĞÍ"""
-        pass
+        """è¯†åˆ«å½“å‰ token çš„ç±»å‹"""
+        token = self.current_token
+        if token in ['class', 'constructor', 'function', 'method', 'field', 'static', 'var', 'int', 'char', 'boolean', 'void', 'true', 'false', 'null', 'this', 'let', 'do', 'if', 'else', 'while', 'return']:
+            return "KEYWORD"
+        if token in '{}()[].,;+-*/&|<>=~':
+            return "SYMBOL"
+        if token.isdigit():
+            return "INT_CONST"
+        if token.startswith('"'):
+            return "STRING_CONST"
+        return "IDENTIFIER"
+
+    def get_token(self):
+        """è·å–å½“å‰ token å†…å®¹ï¼ˆå¦‚æœæ˜¯å­—ç¬¦ä¸²åˆ™å»é™¤å¼•å·ï¼‰"""
+        if self.token_type() == "STRING_CONST":
+            return self.current_token[1:-1]
+        return self.current_token
