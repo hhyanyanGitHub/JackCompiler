@@ -197,21 +197,67 @@ class CompilationEngine:
             
         self._write_tag_end("statements")
 
-    # 为了防止报错，先给语句逻辑留出“空壳”
+    def compile_let(self):
+        """解析 let 语句：let varName ([expression])? = expression;"""
+        self._write_tag_start("letStatement")
+        self._write_xml("keyword", "let")
+        
+        self.tk.advance() # 变量名
+        self._write_xml("identifier", self.tk.get_token())
+        
+        self.tk.advance()
+        if self.tk.get_token() == '[':
+            self._write_xml("symbol", "[")
+            self.tk.advance()
+            self.compile_expression()
+            self._write_xml("symbol", "]")
+            self.tk.advance()
+            
+        self._write_xml("symbol", "=") # 等号
+        self.tk.advance()
+        self.compile_expression()
+        
+        self._write_xml("symbol", ";")
+        self.tk.advance()
+        self._write_tag_end("letStatement")
+
     def compile_do(self):
+        """解析 do 语句：do subroutineCall;"""
         self._write_tag_start("doStatement")
-        # 暂时只读到分号
-        while self.tk.get_token() != ';': self.tk.advance()
+        self._write_xml("keyword", "do")
+        self.tk.advance()
+        self.compile_subroutine_call()
         self._write_xml("symbol", ";")
         self.tk.advance()
         self._write_tag_end("doStatement")
 
-    def compile_let(self):
-        self._write_tag_start("letStatement")
-        while self.tk.get_token() != ';': self.tk.advance()
-        self._write_xml("symbol", ";")
+    def compile_subroutine_call(self):
+        """辅助解析：函数调用 (例如 Main.run(x, y))"""
+        # 这里逻辑稍微复杂，需处理 'f(x)' 和 'Obj.f(x)' 两种情况
+        self._write_xml("identifier", self.tk.get_token())
         self.tk.advance()
-        self._write_tag_end("letStatement")
+        if self.tk.get_token() == '.':
+            self._write_xml("symbol", ".")
+            self.tk.advance()
+            self._write_xml("identifier", self.tk.get_token())
+            self.tk.advance()
+        
+        self._write_xml("symbol", "(")
+        self.tk.advance()
+        self.compile_expression_list() # 解析参数列表
+        self._write_xml("symbol", ")")
+        self.tk.advance()
+
+    def compile_expression_list(self):
+        """解析参数列表：(expression (',' expression)*)?"""
+        self._write_tag_start("expressionList")
+        if self.tk.get_token() != ')':
+            self.compile_expression()
+            while self.tk.get_token() == ',':
+                self._write_xml("symbol", ",")
+                self.tk.advance()
+                self.compile_expression()
+        self._write_tag_end("expressionList")
 
     def compile_return(self):
         self._write_tag_start("returnStatement")
@@ -219,3 +265,84 @@ class CompilationEngine:
         self._write_xml("symbol", ";")
         self.tk.advance()
         self._write_tag_end("returnStatement")
+    #
+    '''
+
+    Expression：由一个 Term 以及零个或多个 (op Term) 组成（例如 x + y）。
+
+    Term：表达式的最小单元。可以是：数字、字符串、变量、函数调用、数组索引、或者括号里的另一个表达式。
+
+    ExpressionList：函数调用时括号里的参数列表（例如 Math.multiply(a, b) 中的 a, b）
+
+    '''
+    def compile_expression(self):
+        """解析表达式：term (op term)*"""
+        self._write_tag_start("expression")
+        
+        # 解析第一个 Term
+        self.compile_term()
+        
+        # 看看后面有没有运算符 (op)
+        ops = '+-*/&|<>='
+        while self.tk.get_token() in ops:
+            self._write_xml("symbol", self.tk.get_token()) # 写入运算符
+            self.tk.advance()
+            self.compile_term() # 解析下一个 Term
+            
+        self._write_tag_end("expression")
+
+    def compile_term(self):
+        """解析项：数字、变量、括号表达式、一元运算等"""
+        self._write_tag_start("term")
+        
+        token_type = self.tk.token_type()
+        token = self.tk.get_token()
+
+        if token_type == "INT_CONST":
+            self._write_xml("integerConstant", token)
+            self.tk.advance()
+        elif token_type == "STRING_CONST":
+            self._write_xml("stringConstant", token)
+            self.tk.advance()
+        elif token in ['true', 'false', 'null', 'this']:
+            self._write_xml("keyword", token)
+            self.tk.advance()
+        elif token == '(':
+            # 括号表达式: '(' expression ')'
+            self._write_xml("symbol", "(")
+            self.tk.advance()
+            self.compile_expression()
+            self._write_xml("symbol", ")")
+            self.tk.advance()
+        elif token in ['-', '~']:
+            # 一元运算: '-' term 或 '~' term
+            self._write_xml("symbol", token)
+            self.tk.advance()
+            self.compile_term()
+        elif token_type == "IDENTIFIER":
+            # 可能是变量名、数组 a[i] 或函数调用 f(x)
+            next_token = self._peek_next_token()
+            if next_token == '[':
+                # 数组处理
+                self._write_xml("identifier", token)
+                self.tk.advance() # [
+                self._write_xml("symbol", "[")
+                self.tk.advance()
+                self.compile_expression()
+                self._write_xml("symbol", "]")
+                self.tk.advance()
+            elif next_token in ['(', '.']:
+                # 子程序调用
+                self.compile_subroutine_call()
+            else:
+                # 普通变量
+                self._write_xml("identifier", token)
+                self.tk.advance()
+        
+        self._write_tag_end("term")
+
+    def _peek_next_token(self):
+        """辅助方法：偷看下一个 Token，但不移动指针"""
+        if self.tk.has_more_tokens():
+            return self.tk.tokens[self.tk.current_index + 1]
+        return None
