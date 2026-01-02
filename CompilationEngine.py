@@ -346,3 +346,86 @@ class CompilationEngine:
         if self.tk.has_more_tokens():
             return self.tk.tokens[self.tk.current_index + 1]
         return None
+        
+    #
+    '''
+    Project 10 的最后一块拼图：控制流语句（if 和 while）。
+
+    1. 核心概念：控制流的递归
+    if 和 while 的结构非常相似。它们都包含：
+
+    一个括号里的 表达式（条件判别）。
+
+    一个花括号里的 语句块（条件成立时执行）。
+
+    对于 if 来说，还可能有一个可选的 else 分支。
+
+    在我们的解析引擎中，这只需要递归调用我们已经写好的 compile_expression 和 compile_statements 即可。
+   ''' 
+    #
+    def compile_if(self):
+        """解析 if 语句：if (expression) { statements } (else { statements })?"""
+        self._write_tag_start("ifStatement")
+        self._write_xml("keyword", "if")
+        
+        # '(' expression ')'
+        self.tk.advance() # (
+        self._write_xml("symbol", "(")
+        self.tk.advance()
+        self.compile_expression()
+        self._write_xml("symbol", ")")
+        
+        # '{' statements '}'
+        self.tk.advance() # {
+        self._write_xml("symbol", "{")
+        self.tk.advance()
+        self.compile_statements()
+        self._write_xml("symbol", "}")
+        
+        # 处理可选的 else 分支
+        self.tk.advance()
+        if self.tk.get_token() == 'else':
+            self._write_xml("keyword", "else")
+            self.tk.advance() # {
+            self._write_xml("symbol", "{")
+            self.tk.advance()
+            self.compile_statements()
+            self._write_xml("symbol", "}")
+            self.tk.advance()
+            
+        self._write_tag_end("ifStatement")
+
+    def compile_while(self):
+        """解析 while 语句：while (expression) { statements }"""
+        self._write_tag_start("whileStatement")
+        self._write_xml("keyword", "while")
+        
+        # '(' expression ')'
+        self.tk.advance() # (
+        self._write_xml("symbol", "(")
+        self.tk.advance()
+        self.compile_expression()
+        self._write_xml("symbol", ")")
+        
+        # '{' statements '}'
+        self.tk.advance() # {
+        self._write_xml("symbol", "{")
+        self.tk.advance()
+        self.compile_statements()
+        self._write_xml("symbol", "}")
+        
+        self.tk.advance()
+        self._write_tag_end("whileStatement")
+
+    def compile_return(self):
+        """解析 return 语句：return expression? ;"""
+        self._write_tag_start("returnStatement")
+        self._write_xml("keyword", "return")
+        
+        self.tk.advance()
+        if self.tk.get_token() != ';':
+            self.compile_expression()
+            
+        self._write_xml("symbol", ";")
+        self.tk.advance()
+        self._write_tag_end("returnStatement")
