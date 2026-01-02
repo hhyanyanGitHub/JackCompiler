@@ -1,431 +1,250 @@
+from SymbolTable import SymbolTable
+from VMWriter import VMWriter
+
 class CompilationEngine:
     def __init__(self, tokenizer, output_file):
         self.tk = tokenizer
-        self.output = open(output_file, 'w', encoding='utf-8')
-        self.indent_level = 0
-
-    def _write_xml(self, tag, content):
-        """辅助：写入带缩进的 XML 标签"""
-        space = "  " * self.indent_level
-        # 转义 XML 特殊字符
-        content = content.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-        self.output.write(f"{space}<{tag}> {content} </{tag}>\n")
-
-    def _write_tag_start(self, tag):
-        self.output.write("  " * self.indent_level + f"<{tag}>\n")
-        self.indent_level += 1
-
-    def _write_tag_end(self, tag):
-        self.indent_level -= 1
-        self.output.write("  " * self.indent_level + f"</{tag}>\n")
-    def _get_type_tag(self):
-        """
-        辅助方法：判断当前 Token 是关键字类型（如 int）还是自定义类名（标识符）
-        """
-        if self.tk.token_type() == "KEYWORD":
-            return "keyword"
-        else:
-            return "identifier"
+        self.vm_writer = VMWriter(output_file)
+        self.symbol_table = SymbolTable()
+        self.class_name = ""
+        self.label_count = 0 # 用于生成唯一的 if/while 标签
 
     def compile_class(self):
-        """解析整个类结构"""
-        self._write_tag_start("class")
-        
-        self.tk.advance() # 读入 'class'
-        self._write_xml("keyword", self.tk.get_token())
-        
-        self.tk.advance() # 读入 类名
-        self._write_xml("identifier", self.tk.get_token())
-        
-        self.tk.advance() # 读入 '{'
-        self._write_xml("symbol", self.tk.get_token())
+        """解析 Class 并记录类名"""
+        self.tk.advance() # 'class'
+        self.tk.advance() # className
+        self.class_name = self.tk.get_token()
+        self.tk.advance() # '{'
 
-        self.tk.advance() # 为循环预读一个 Token
+        self.tk.advance()
         while self.tk.has_more_tokens():
             token = self.tk.get_token()
-            
             if token in ['static', 'field']:
                 self.compile_class_var_dec()
-                # 注意：compile_class_var_dec 内部最后会执行 advance()
-                # 所以这里不需要再写一次 advance
             elif token in ['constructor', 'function', 'method']:
                 self.compile_subroutine()
             elif token == '}':
-                self._write_xml("symbol", "}")
                 break
-            else:
-                # 容错处理：如果没匹配到，往下读一个，防止死循环
-                if self.tk.has_more_tokens():
-                    self.tk.advance()
-        
-        self._write_tag_end("class")
-        self.output.close()
+        self.vm_writer.close()
 
     def compile_class_var_dec(self):
-        """解析类变量定义：static/field 类型 变量名;"""
-        self._write_tag_start("classVarDec")
-        
-        # 写入 static 或 field
-        self._write_xml("keyword", self.tk.get_token()) 
-        
-        # 读入并写入类型 (int, char, boolean 或 类名)
-        self.tk.advance() 
-        self._write_xml(self._get_type_tag(), self.tk.get_token())
-        
-        # 读入并写入变量名
+        """将类变量存入符号表"""
+        kind = self.tk.get_token().upper() # STATIC 或 FIELD
         self.tk.advance()
-        self._write_xml("identifier", self.tk.get_token())
+        v_type = self.tk.get_token() # int, char...
+        self.tk.advance()
+        v_name = self.tk.get_token() # 变量名
         
-        # 处理逗号分隔的多个变量
+        self.symbol_table.define(v_name, v_type, kind)
+        
         while True:
             self.tk.advance()
             if self.tk.get_token() == ',':
-                self._write_xml("symbol", ",")
                 self.tk.advance()
-                self._write_xml("identifier", self.tk.get_token())
+                v_name = self.tk.get_token()
+                self.symbol_table.define(v_name, v_type, kind)
             else:
                 break
-        
-        # 此时 token 应该是 ';'
-        self._write_xml("symbol", ";")
-        
-        # 为下一轮循环读取新 Token
-        self.tk.advance() 
-        
-        self._write_tag_end("classVarDec")
+        self.tk.advance() # 跳过 ';'
+    
     def compile_subroutine(self):
-        """解析函数声明：function/method/constructor 类型 函数名 (参数列表) { 局部变量 语句 }"""
-        self._write_tag_start("subroutineDec")
+        """处理函数入口，特别是 method 的 this 指针绑定"""
+        self.symbol_table.start_subroutine()
+        keyword = self.tk.get_token() # constructor/function/method
         
-        # 此时当前 token 是 function/method/constructor
-        self._write_xml("keyword", self.tk.get_token())
+        # 如果是 method，ARG 0 自动分配给 'this'
+        if keyword == 'method':
+            self.symbol_table.define('this', self.class_name, 'ARG')
+            
+        self.tk.advance() # 返回类型
+        self.tk.advance() 
+        subroutine_name = self.tk.get_token() # 函数名
+        full_name = f"{self.class_name}.{subroutine_name}"
         
-        # 返回类型
-        self.tk.advance()
-        self._write_xml(self._get_type_tag(), self.tk.get_token())
-        
-        # 函数名
-        self.tk.advance()
-        self._write_xml("identifier", self.tk.get_token())
-        
-        # 左括号 '('
-        self.tk.advance()
-        self._write_xml("symbol", "(")
-        
-        # 解析参数列表 (可能为空)
+        self.tk.advance() # '('
         self.tk.advance()
         self.compile_parameter_list()
+        self.tk.advance() # '{'
         
-        # 右括号 ')' - 注意：compile_parameter_list 结束后当前 token 应该是 ')'
-        self._write_xml("symbol", ")")
-        
-        # 函数体
-        self._write_tag_start("subroutineBody")
-        self.tk.advance() # 读入 '{'
-        self._write_xml("symbol", "{")
-        
-        # 循环处理函数体内的局部变量声明 (var...)
+        # 先解析完所有 var 声明，填充符号表
         self.tk.advance()
         while self.tk.get_token() == 'var':
             self.compile_var_dec()
-            
-        # 处理语句 (let, do, if, while, return)
-        self.compile_statements()
-        
-        # 此时当前 token 应该是 '}'
-        self._write_xml("symbol", "}")
-        self._write_tag_end("subroutineBody")
-        self._write_tag_end("subroutineDec")
-        
-        # 为 class 层的下一轮循环准备 Token
-        self.tk.advance()
 
-    def compile_parameter_list(self):
-        """解析参数列表：((type varName) (',' type varName)*)?"""
-        self._write_tag_start("parameterList")
+        # 此时已知局部变量个数，输出 function 声明
+        n_locals = self.symbol_table.var_count('VAR')
+        self.vm_writer.write_function(full_name, n_locals)
+
+        # 特殊处理：constructor 需要分配内存
+        if keyword == 'constructor':
+            n_fields = self.symbol_table.var_count('FIELD')
+            self.vm_writer.write_push('constant', n_fields)
+            self.vm_writer.write_call('Memory.alloc', 1)
+            self.vm_writer.write_pop('pointer', 0) # 将新地址设为 THIS
         
-        # 如果不是 ')'，说明有参数
-        if self.tk.get_token() != ')':
-            while True:
-                self._write_xml(self._get_type_tag(), self.tk.get_token()) # 类型
-                self.tk.advance()
-                self._write_xml("identifier", self.tk.get_token())      # 变量名
-                self.tk.advance()
-                if self.tk.get_token() == ',':
-                    self._write_xml("symbol", ",")
-                    self.tk.advance()
-                else:
-                    break
-        
-        self._write_tag_end("parameterList")
+        # 特殊处理：method 需要重定向 THIS 到 ARG 0
+        elif keyword == 'method':
+            self.vm_writer.write_push('argument', 0)
+            self.vm_writer.write_pop('pointer', 0)
+
+        self.compile_statements()
+        # 跳过最后的分号或括号
+        if self.tk.has_more_tokens(): self.tk.advance() 
 
     def compile_var_dec(self):
-        """解析局部变量声明：var type varName (',' varName)* ;"""
-        self._write_tag_start("varDec")
-        self._write_xml("keyword", "var")
-        
-        self.tk.advance() # 类型
-        self._write_xml(self._get_type_tag(), self.tk.get_token())
-        
-        self.tk.advance() # 变量名
-        self._write_xml("identifier", self.tk.get_token())
+        """将局部变量存入符号表"""
+        # 逻辑与 compile_class_var_dec 类似，kind 固定为 'VAR'
+        self.tk.advance() # 跳过 'var'
+        v_type = self.tk.get_token()
+        self.tk.advance()
+        v_name = self.tk.get_token()
+        self.symbol_table.define(v_name, v_type, 'VAR')
         
         while True:
             self.tk.advance()
             if self.tk.get_token() == ',':
-                self._write_xml("symbol", ",")
                 self.tk.advance()
-                self._write_xml("identifier", self.tk.get_token())
+                v_name = self.tk.get_token()
+                self.symbol_table.define(v_name, v_type, 'VAR')
             else:
                 break
-        
-        self._write_xml("symbol", ";")
-        self.tk.advance() # 为下一行准备
-        self._write_tag_end("varDec")
-
-    def compile_statements(self):
-        """解析一系列语句"""
-        self._write_tag_start("statements")
-        
-        while self.tk.get_token() in ['let', 'if', 'while', 'do', 'return']:
-            token = self.tk.get_token()
-            if token == 'let': self.compile_let()
-            elif token == 'if': self.compile_if()
-            elif token == 'while': self.compile_while()
-            elif token == 'do': self.compile_do()
-            elif token == 'return': self.compile_return()
-            
-        self._write_tag_end("statements")
-
-    def compile_let(self):
-        """解析 let 语句：let varName ([expression])? = expression;"""
-        self._write_tag_start("letStatement")
-        self._write_xml("keyword", "let")
-        
-        self.tk.advance() # 变量名
-        self._write_xml("identifier", self.tk.get_token())
-        
-        self.tk.advance()
-        if self.tk.get_token() == '[':
-            self._write_xml("symbol", "[")
-            self.tk.advance()
-            self.compile_expression()
-            self._write_xml("symbol", "]")
-            self.tk.advance()
-            
-        self._write_xml("symbol", "=") # 等号
-        self.tk.advance()
-        self.compile_expression()
-        
-        self._write_xml("symbol", ";")
-        self.tk.advance()
-        self._write_tag_end("letStatement")
-
-    def compile_do(self):
-        """解析 do 语句：do subroutineCall;"""
-        self._write_tag_start("doStatement")
-        self._write_xml("keyword", "do")
-        self.tk.advance()
-        self.compile_subroutine_call()
-        self._write_xml("symbol", ";")
-        self.tk.advance()
-        self._write_tag_end("doStatement")
-
-    def compile_subroutine_call(self):
-        """辅助解析：函数调用 (例如 Main.run(x, y))"""
-        # 这里逻辑稍微复杂，需处理 'f(x)' 和 'Obj.f(x)' 两种情况
-        self._write_xml("identifier", self.tk.get_token())
-        self.tk.advance()
-        if self.tk.get_token() == '.':
-            self._write_xml("symbol", ".")
-            self.tk.advance()
-            self._write_xml("identifier", self.tk.get_token())
-            self.tk.advance()
-        
-        self._write_xml("symbol", "(")
-        self.tk.advance()
-        self.compile_expression_list() # 解析参数列表
-        self._write_xml("symbol", ")")
-        self.tk.advance()
-
-    def compile_expression_list(self):
-        """解析参数列表：(expression (',' expression)*)?"""
-        self._write_tag_start("expressionList")
+        self.tk.advance() # 跳过 ';'
+    def compile_parameter_list(self):
+        """解析参数列表并存入符号表：(type varName (',' type varName)*)?"""
+        # 注意：此时当前 token 已经是参数列表的第一个词，或者是一个 ')'
         if self.tk.get_token() != ')':
-            self.compile_expression()
-            while self.tk.get_token() == ',':
-                self._write_xml("symbol", ",")
+            v_type = self.tk.get_token()
+            self.tk.advance()
+            v_name = self.tk.get_token()
+            self.symbol_table.define(v_name, v_type, 'ARG')
+            
+            while True:
                 self.tk.advance()
-                self.compile_expression()
-        self._write_tag_end("expressionList")
-
-    def compile_return(self):
-        self._write_tag_start("returnStatement")
-        while self.tk.get_token() != ';': self.tk.advance()
-        self._write_xml("symbol", ";")
-        self.tk.advance()
-        self._write_tag_end("returnStatement")
-    #
-    '''
-
-    Expression：由一个 Term 以及零个或多个 (op Term) 组成（例如 x + y）。
-
-    Term：表达式的最小单元。可以是：数字、字符串、变量、函数调用、数组索引、或者括号里的另一个表达式。
-
-    ExpressionList：函数调用时括号里的参数列表（例如 Math.multiply(a, b) 中的 a, b）
-
-    '''
+                if self.tk.get_token() == ',':
+                    self.tk.advance()
+                    v_type = self.tk.get_token()
+                    self.tk.advance()
+                    v_name = self.tk.get_token()
+                    self.symbol_table.define(v_name, v_type, 'ARG')
+                else:
+                    break
+    
     def compile_expression(self):
         """解析表达式：term (op term)*"""
-        self._write_tag_start("expression")
-        
         # 解析第一个 Term
         self.compile_term()
         
-        # 看看后面有没有运算符 (op)
-        ops = '+-*/&|<>='
+        # 运算符映射表：Jack 符号 -> VM 指令或系统调用
+        ops = {
+            '+': 'add', '-': 'sub', '*': 'Math.multiply', '/': 'Math.divide',
+            '&': 'and', '|': 'or', '<': 'lt', '>': 'gt', '=': 'eq'
+        }
+        
         while self.tk.get_token() in ops:
-            self._write_xml("symbol", self.tk.get_token()) # 写入运算符
+            op = self.tk.get_token()
             self.tk.advance()
-            self.compile_term() # 解析下一个 Term
             
-        self._write_tag_end("expression")
+            # 解析下一个 Term
+            self.compile_term()
+            
+            # 生成运算指令
+            if op in ['*', '/']:
+                # 乘除法在 VM 层级是通过系统调用实现的
+                self.vm_writer.write_call(ops[op], 2)
+            else:
+                self.vm_writer.write_arithmetic(ops[op])
 
     def compile_term(self):
-        """解析项：数字、变量、括号表达式、一元运算等"""
-        self._write_tag_start("term")
-        
+        """解析项：处理数字、变量、括号、一元运算等"""
         token_type = self.tk.token_type()
         token = self.tk.get_token()
 
         if token_type == "INT_CONST":
-            self._write_xml("integerConstant", token)
+            self.vm_writer.write_push('constant', token)
             self.tk.advance()
+            
         elif token_type == "STRING_CONST":
-            self._write_xml("stringConstant", token)
+            # 字符串处理：申请内存并逐个 appendChar
+            s = token
+            self.vm_writer.write_push('constant', len(s))
+            self.vm_writer.write_call('String.new', 1)
+            for char in s:
+                self.vm_writer.write_push('constant', ord(char))
+                self.vm_writer.write_call('String.appendChar', 2)
             self.tk.advance()
+
         elif token in ['true', 'false', 'null', 'this']:
-            self._write_xml("keyword", token)
+            if token == 'this':
+                self.vm_writer.write_push('pointer', 0)
+            else:
+                self.vm_writer.write_push('constant', 0)
+                if token == 'true':
+                    self.vm_writer.write_arithmetic('not') # true 是 0 取反
             self.tk.advance()
+
         elif token == '(':
-            # 括号表达式: '(' expression ')'
-            self._write_xml("symbol", "(")
-            self.tk.advance()
+            self.tk.advance() # (
             self.compile_expression()
-            self._write_xml("symbol", ")")
-            self.tk.advance()
+            self.tk.advance() # )
+
         elif token in ['-', '~']:
-            # 一元运算: '-' term 或 '~' term
-            self._write_xml("symbol", token)
+            op = token
             self.tk.advance()
             self.compile_term()
+            if op == '-': self.vm_writer.write_arithmetic('neg')
+            else: self.vm_writer.write_arithmetic('not')
+
         elif token_type == "IDENTIFIER":
-            # 可能是变量名、数组 a[i] 或函数调用 f(x)
+            name = token
             next_token = self._peek_next_token()
-            if next_token == '[':
-                # 数组处理
-                self._write_xml("identifier", token)
+            
+            if next_token == '[': # 数组访问
+                self.tk.advance() # 变量名
                 self.tk.advance() # [
-                self._write_xml("symbol", "[")
-                self.tk.advance()
                 self.compile_expression()
-                self._write_xml("symbol", "]")
-                self.tk.advance()
-            elif next_token in ['(', '.']:
-                # 子程序调用
+                self.tk.advance() # ]
+                # 将数组基地址和偏移量相加
+                kind = self.symbol_table.kind_of(name)
+                idx = self.symbol_table.index_of(name)
+                self.vm_writer.write_push(kind, idx)
+                self.vm_writer.write_arithmetic('add')
+                self.vm_writer.write_pop('pointer', 1) # 锚定 THAT
+                self.vm_writer.write_push('that', 0)
+                
+            elif next_token in ['(', '.']: # 函数调用
                 self.compile_subroutine_call()
-            else:
-                # 普通变量
-                self._write_xml("identifier", token)
+            else: # 普通变量
+                kind = self.symbol_table.kind_of(name)
+                idx = self.symbol_table.index_of(name)
+                self.vm_writer.write_push(kind, idx)
                 self.tk.advance()
-        
-        self._write_tag_end("term")
-
-    def _peek_next_token(self):
-        """辅助方法：偷看下一个 Token，但不移动指针"""
-        if self.tk.has_more_tokens():
-            return self.tk.tokens[self.tk.current_index + 1]
-        return None
-        
-    #
-    '''
-    Project 10 的最后一块拼图：控制流语句（if 和 while）。
-
-    1. 核心概念：控制流的递归
-    if 和 while 的结构非常相似。它们都包含：
-
-    一个括号里的 表达式（条件判别）。
-
-    一个花括号里的 语句块（条件成立时执行）。
-
-    对于 if 来说，还可能有一个可选的 else 分支。
-
-    在我们的解析引擎中，这只需要递归调用我们已经写好的 compile_expression 和 compile_statements 即可。
-   ''' 
-    #
-    def compile_if(self):
-        """解析 if 语句：if (expression) { statements } (else { statements })?"""
-        self._write_tag_start("ifStatement")
-        self._write_xml("keyword", "if")
-        
-        # '(' expression ')'
-        self.tk.advance() # (
-        self._write_xml("symbol", "(")
+    
+    def compile_let(self):
+        """解析 let 语句"""
+        self.tk.advance() # let
+        var_name = self.tk.get_token()
         self.tk.advance()
+        
+        is_array = False
+        if self.tk.get_token() == '[':
+            is_array = True
+            # ... 数组逻辑稍复杂，先处理普通变量 ...
+            pass
+
+        self.tk.advance() # =
         self.compile_expression()
-        self._write_xml("symbol", ")")
+        self.tk.advance() # ;
         
-        # '{' statements '}'
-        self.tk.advance() # {
-        self._write_xml("symbol", "{")
-        self.tk.advance()
-        self.compile_statements()
-        self._write_xml("symbol", "}")
-        
-        # 处理可选的 else 分支
-        self.tk.advance()
-        if self.tk.get_token() == 'else':
-            self._write_xml("keyword", "else")
-            self.tk.advance() # {
-            self._write_xml("symbol", "{")
-            self.tk.advance()
-            self.compile_statements()
-            self._write_xml("symbol", "}")
-            self.tk.advance()
-            
-        self._write_tag_end("ifStatement")
+        # 将结果存入变量
+        kind = self.symbol_table.kind_of(var_name)
+        idx = self.symbol_table.index_of(var_name)
+        self.vm_writer.write_pop(kind, idx)
 
-    def compile_while(self):
-        """解析 while 语句：while (expression) { statements }"""
-        self._write_tag_start("whileStatement")
-        self._write_xml("keyword", "while")
-        
-        # '(' expression ')'
-        self.tk.advance() # (
-        self._write_xml("symbol", "(")
-        self.tk.advance()
-        self.compile_expression()
-        self._write_xml("symbol", ")")
-        
-        # '{' statements '}'
-        self.tk.advance() # {
-        self._write_xml("symbol", "{")
-        self.tk.advance()
-        self.compile_statements()
-        self._write_xml("symbol", "}")
-        
-        self.tk.advance()
-        self._write_tag_end("whileStatement")
-
-    def compile_return(self):
-        """解析 return 语句：return expression? ;"""
-        self._write_tag_start("returnStatement")
-        self._write_xml("keyword", "return")
-        
-        self.tk.advance()
-        if self.tk.get_token() != ';':
-            self.compile_expression()
-            
-        self._write_xml("symbol", ";")
-        self.tk.advance()
-        self._write_tag_end("returnStatement")
+    def compile_do(self):
+        """解析 do 语句"""
+        self.tk.advance() # do
+        self.compile_subroutine_call()
+        # do 语句会调用函数，Jack 规定所有函数都有返回值
+        # 但 do 语句不关心返回值，所以必须将其从栈顶弹出并丢弃
+        self.vm_writer.write_pop('temp', 0) 
+        self.tk.advance() # ;
